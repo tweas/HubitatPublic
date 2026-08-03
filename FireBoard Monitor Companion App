@@ -1,0 +1,1637 @@
+/*
+ *------------------------------------------------------------------------------
+ *
+ *  FireBoard Monitor Companion App
+ *
+ *  Author: ChatGPT / tweas.
+ *
+ *  Version: 1.0.0
+ *
+ *------------------------------------------------------------------------------
+ *
+ *  Polls a FireBoard device while respecting the API rate limits.
+ *
+ *  Future Features
+ *
+ *      • Grill monitoring
+ *      • Multiple meat probes
+ *      • Notifications
+ *      • Flip calculations
+ *      • Hub Variable integration
+ *
+ *------------------------------------------------------------------------------
+ */
+
+definition(
+    name:           "FireBoard Monitor Companion App",
+    namespace:      "tweas",
+    author:         "Tray E.",
+    description:    "FireBoard monitoring and notification app",
+    category:       "Convenience",
+    singleInstance: false,
+    iconUrl:        "",
+    iconX2Url:      "",
+    iconX3Url: ""
+)
+
+preferences {
+
+    page(
+        name: "pageMain",
+        title: "FireBoard Monitor",
+        install: true,
+        uninstall: true
+    )
+
+}
+/**************************************************************************************************
+ *
+ *  Installed
+ *
+ **************************************************************************************************/
+
+def installed() {
+
+    log.info "FireBoard Monitor Installed"
+
+    initialize()
+
+}
+
+/**************************************************************************************************
+ *
+ *  Updated
+ *
+ **************************************************************************************************/
+
+def updated() {
+
+    log.info "FireBoard Monitor Updated"
+
+    unsubscribe()
+    unschedule()
+
+    removeAllInUseGlobalVar()
+
+    def vars = []
+
+    if (useHubVariables) {
+        if (grillTargetVariable)     vars << grillTargetVariable
+        if (grillLowOffsetVariable)  vars << grillLowOffsetVariable
+        if (grillHighOffsetVariable) vars << grillHighOffsetVariable
+        if (foodTargetVariable)      vars << foodTargetVariable
+        if (foodFlipVariable)        vars << foodFlipVariable
+
+        if(vars) {
+            addInUseGlobalVar(vars)
+        }
+    }
+
+    initialize()
+}
+
+/**************************************************************************************************
+ *
+ *  Initialize
+ *
+ **************************************************************************************************/
+
+def initialize() {
+
+    log.info "Initializing FireBoard Monitor"
+
+    subscribe(triggerSwitch,
+              "switch",
+              triggerHandler)
+    
+     if(calculateFlipSwitch) {
+
+        logDebug "Subscribing to Calculate Flip Switch: ${calculateFlipSwitch.displayName}"
+
+        subscribe(
+            calculateFlipSwitch,
+            "switch.on",
+            calculateFlipHandler
+        )
+
+    }
+    else {
+
+        logDebug "No Calculate Flip Switch selected"
+
+    }
+
+}
+/**************************************************************************************************
+ *
+ *  Main Page
+ *
+ **************************************************************************************************/
+
+def pageMain() {
+
+    dynamicPage(name: "pageMain") {
+
+        section("FireBoard Device") {
+
+            input(
+                "fireboardDevice",
+                "capability.switch",
+                title: "FireBoard Device",
+                required: true,
+                multiple: false
+            )
+
+        }
+
+        section("Temperature Sensors") {
+
+            paragraph """
+            Select the FireBoard probe devices created by the FireBoard driver.
+            Assign probes as either Grill temperature sensors or Food temperature sensors.
+            Do not select the same sensor in both groups.
+            """
+
+            input(
+                "grillSensors",
+                "capability.temperatureMeasurement",
+                title: "Grill Temperature Sensor(s)",
+                required: false,
+                multiple: true
+            )
+
+            input(
+                "foodSensors",
+                "capability.temperatureMeasurement",
+                title: "Food Temperature Sensor(s)",
+                required: false,
+                multiple: true
+            )
+
+        }
+        
+        section("Temperature Configuration") {
+
+    input(
+        "useHubVariables",
+        "bool",
+        title: "Use Hub Variables for Temperature Settings",
+        defaultValue: false,
+        submitOnChange: true
+    )
+
+
+    if(useHubVariables) {
+
+        section("Hub Variable Assignments") {
+
+            input(
+                "grillTargetVariable",
+                "enum",
+                title: "Grill Target Temperature Variable",
+                options: getHubNumberVariables(),
+                required: true
+            )
+
+            input(
+                "grillLowOffsetVariable",
+                "enum",
+                title: "Grill Low Offset Variable (Optional)",
+                options: getHubNumberVariables(),
+                required: false
+            )
+
+            input(
+                "grillHighOffsetVariable",
+                "enum",
+                title: "Grill High Offset Variable (Optional)",
+                options: getHubNumberVariables(),
+                required: false
+			)
+
+            input(
+                "foodTargetVariable",
+                "enum",
+                title: "Food Target Temperature Variable",
+                options: getHubNumberVariables(),
+                required: true
+            )
+
+            input(
+                "foodFlipVariable",
+                "enum",
+                title: "Food Flip/Stall Temperature Variable (Optional)",
+                options: getHubNumberVariables(),
+                required: false
+            )
+
+        }
+
+    }
+    else {
+
+
+        section("Grill Temperature Settings") {
+
+            input(
+                "grillTargetTemp",
+                "number",
+                title: "Grill Target Temperature",
+                defaultValue: 450
+            )
+
+            input(
+                "grillLowOffset",
+                "number",
+                title: "Grill Low Offset",
+                defaultValue: 50
+            )
+
+            input(
+                "grillHighOffset",
+                "number",
+                title: "Grill High Offset",
+                defaultValue: 50
+            )
+
+        }
+
+
+        section("Food Temperature Settings") {
+
+            input(
+                "foodTargetTemp",
+                "number",
+                title: "Food Target Temperature",
+                defaultValue: 145
+            )
+
+            input(
+                "foodFlipTemp",
+                "number",
+                title: "Food Flip/Stall Temperature (Optional)",
+                required:false
+            )
+
+        }
+
+    }
+
+}
+        section("Trigger Switch") {
+
+            input(
+                "triggerSwitch",
+                "capability.switch",
+                title: "Start Monitoring Switch",
+                required: true,
+                multiple: false
+            )
+
+        }
+        
+		section("Trigger Flip Calculation/Actual Cook Start") {
+
+           input(
+                "calculateFlipSwitch",
+                "capability.switch",
+                title: "Calculate Flip Switch",
+                required: false,
+                multiple: false
+            )
+
+}
+        section("Polling") {
+
+            input(
+                "startupDelay",
+                "number",
+                title: "Startup Delay (seconds)",
+                defaultValue: 5
+            )
+
+            input(
+                "pollSeconds",
+                "number",
+                title: "Polling Frequency (seconds)",
+                defaultValue: 20
+            )
+
+            input(
+                "refreshMinutes",
+                "number",
+                title: "Refresh Every (minutes)",
+                defaultValue: 5
+            )
+
+        }
+
+        section("FireBoard Status") {
+
+            paragraph """
+            <b>Recommended FireBoard settings:</b><br>
+            Refresh Rate: Manual<br>
+            Drive Logging: Disabled
+            """
+
+            if(state.fireboardWarnings) {
+
+                paragraph """
+                <font color='red'>
+                <b>Warnings:</b><br>
+                ${state.fireboardWarnings.join("<br>")}
+                </font>
+                """
+
+            }
+
+        }
+
+         section("Notifications") {
+
+            input(
+                "notificationDevices",
+                "capability.notification",
+                title: "Phone Notification Devices",
+                required: false,
+                multiple: true
+            )
+
+            input(
+                "speechDevices",
+                "capability.speechSynthesis",
+                title: "TTS Speakers",
+                required: false,
+                multiple: true
+            )
+
+            input(
+                "enableNotifications",
+                "bool",
+                title: "Enable Notifications",
+                defaultValue: true
+            )
+
+        }
+        
+        section("Logging") {
+
+            input(
+                "enableDebug",
+                "bool",
+                title: "Enable Debug Logging",
+                defaultValue: true
+            )
+
+        }
+
+    }
+
+}
+/**************************************************************************************************
+ *
+ *  State Variables
+ *
+ **************************************************************************************************/
+
+def initializeState() {
+
+    state.loopCounter = 0
+
+    state.refreshCounter = calculateRefreshCounter()
+    
+   if(state.grillStatus == null)
+        state.grillStatus = []
+
+   if(state.foodStatus == null)
+        state.foodStatus = []
+
+
+}
+/**************************************************************************************************
+ *
+ *  Trigger Switch Handler
+ *
+ **************************************************************************************************/
+
+def triggerHandler(evt) {
+
+    if(enableDebug)
+        log.debug "Trigger Switch = ${evt.value}"
+
+    if(evt.value == "on") {
+
+        startMonitoring()
+
+    }
+    else {
+
+        stopMonitoring()
+
+    }
+
+}
+
+/**************************************************************************************************
+ *
+ * Calculate Flip Handler
+ *
+ **************************************************************************************************/
+
+def calculateFlipHandler(evt) {
+
+    logInfo "Calculate Flip requested"
+
+    if(triggerSwitch.currentValue("switch") != "on") {
+
+        logWarn "Cannot calculate flip. Monitoring is not active."
+
+        if(calculateFlipSwitch) {
+            calculateFlipSwitch.off()
+        }
+
+        return
+
+    }
+
+
+    recalculateFlip()
+
+
+    calculateFlipSwitch.off()
+
+}
+
+/**************************************************************************************************
+ *
+ * Recalculate Food Flip Temperature
+ *
+ * Uses current temperature as the new cook starting point.
+ *
+ **************************************************************************************************/
+
+def recalculateFlip(boolean useCurrentTemperature = true) {
+
+
+    state.foodStatus = state.foodStatus.collect { food ->
+
+
+        def sensor = foodSensors.find {
+            it.displayName == food.sensor
+        }
+
+
+        if(sensor) {
+
+
+            BigDecimal startTemp
+
+
+            if(useCurrentTemperature) {
+
+                startTemp = sensor.currentTemperature as BigDecimal
+
+                food.cookStartTemp = startTemp
+
+                food.currentTemp = startTemp
+
+            }
+            else {
+
+                startTemp = food.cookStartTemp as BigDecimal
+
+            }
+
+
+            food.flipTemp =
+                (
+                    startTemp +
+                    ((food.targetTemp - startTemp) / 2)
+                ).setScale(
+                    1,
+                    BigDecimal.ROUND_HALF_UP
+                )
+
+
+            food.flipAlertSent = false
+
+
+            logInfo """
+Flip recalculated:
+
+Sensor:
+${food.sensor}
+
+Start Temperature:
+${startTemp}
+
+Target:
+${food.targetTemp}
+
+New Flip Temperature:
+${food.flipTemp}
+"""
+
+        }
+
+
+        return food
+
+    }
+
+}
+
+/**************************************************************************************************
+ *
+ *  Start Monitoring
+ *
+ **************************************************************************************************/
+
+def startMonitoring() {
+
+    log.info "Starting FireBoard Monitor"
+
+
+    if(!validateHubVariables()) {
+
+        log.error "Hub Variable validation failed."
+
+        stopMonitoring()
+
+        return
+
+    }
+
+
+    verifyFireBoardSettings()
+
+    initializeState()
+
+ 	logDebug "Selected Grill Sensor: ${grillSensors?.displayName}"
+    logDebug "Selected Food Sensors: ${foodSensors*.displayName}"
+    if(!validateSensorAssignments()) {
+
+    log.warn "Invalid sensor assignment. Monitoring stopped."
+
+    stopMonitoring()
+
+    return
+
+	}
+    
+    logDebug "Grill Target: ${getGrillTarget()}"
+	logDebug "Grill Low: ${getGrillLow()}"
+	logDebug "Grill High: ${getGrillHigh()}"
+
+	logDebug "Food Target: ${getFoodTarget()}"
+	logDebug "Food Flip: ${getFoodFlip()}"
+    
+  		// fireboardDevice.on()
+  		// FireBoard driver scheduling disabled.
+ 		 // App is controlling polling directly.
+	logDebug "FireBoard driver scheduler disabled. App polling active."
+
+	initializeCook()
+    
+    runIn(
+        startupDelay,
+        startPolling,
+        [
+            overwrite:true
+        ]
+    )
+
+}
+
+/**************************************************************************************************
+ *
+ * Initialize Cook
+ *
+ * Captures starting temperatures and initializes alert states.
+ *
+ **************************************************************************************************/
+
+def initializeCook() {
+
+    logDebug "Initializing cook state"
+
+
+    state.grillStatus = []
+
+    state.foodStatus = []
+
+
+    /*
+     * Initialize Grill Sensors
+     */
+
+    if(grillSensors) {
+
+        grillSensors.each { sensor ->
+
+            def grill = [
+
+                sensor: sensor.displayName,
+
+                currentTemp: sensor.currentTemperature,
+
+                targetTemp: getGrillTarget(),
+
+                lowAlert: getGrillLow(),
+
+                highAlert: getGrillHigh(),
+
+                targetAlertSent: false,
+
+                lowAlertSent: false,
+
+                highAlertSent: false
+
+            ]
+
+
+            state.grillStatus << grill
+
+
+            logDebug """
+Initialized Grill:
+
+Sensor: ${grill.sensor}
+Starting Temp: ${grill.currentTemp}
+Target: ${grill.targetTemp}
+Low Alert: ${grill.lowAlert}
+High Alert: ${grill.highAlert}
+"""
+
+        }
+
+    }
+
+
+    /*
+     * Initialize Food Sensors
+     */
+
+    if(foodSensors) {
+
+        foodSensors.each { sensor ->
+
+
+            BigDecimal startTemp = sensor.currentTemperature as BigDecimal
+
+
+            BigDecimal flipTemp = getFoodFlip()
+
+
+            /*
+             * If no manual flip temperature is provided,
+             * calculate halfway point.
+             */
+
+            if(!flipTemp) {
+
+                flipTemp =
+                    ((getFoodTarget() - startTemp) / 2) + startTemp
+
+                flipTemp = flipTemp.setScale(1, BigDecimal.ROUND_HALF_UP)
+
+            }
+
+
+            def food = [
+
+                sensor: sensor.displayName,
+
+                cookStartTemp: startTemp,
+
+                currentTemp: startTemp,
+
+                targetTemp: getFoodTarget(),
+
+                flipTemp: flipTemp,
+                
+                flipMode: getFoodFlip() ? "MANUAL" : "AUTO",
+
+                done: false,
+
+                flipAlertSent: false,
+
+                doneAlertSent: false
+
+            ]
+
+
+            state.foodStatus << food
+
+
+            logDebug """
+Initialized Food:
+
+Sensor: ${food.sensor}
+Starting Temp: ${food.cookStartTemp}
+Target: ${food.targetTemp}
+Flip Temp: ${food.flipTemp}
+"""
+
+        }
+
+    }
+
+
+}
+
+/**************************************************************************************************
+ *
+ *  Polling Engine
+ *
+ *  The FireBoard driver is configured for Manual refresh.
+ *  This app controls:
+ *
+ *      GetTemperature()
+ *      refresh()
+ *
+ **************************************************************************************************/
+
+def startPolling() {
+
+    logInfo "Starting FireBoard polling engine"
+
+    state.loopCounter = 0
+    state.refreshCounter = calculateRefreshCounter()
+
+    if(!validateApiLimits()) {
+
+        log.warn "Polling configuration exceeds FireBoard API limits. Polling stopped."
+        stopMonitoring()
+        return
+
+    }
+
+    logDebug "Performing initial FireBoard refresh"
+
+    fireboardDevice.refresh()
+    
+    monitorTemperatures()
+    
+    state.loopCounter = 0
+
+    runIn(
+        pollSeconds.toInteger(),
+        "pollLoop",
+        [
+            overwrite:true
+        ]
+    )
+
+}
+
+
+/**************************************************************************************************
+ *
+ *  Main Poll Loop
+ *
+ **************************************************************************************************/
+
+def pollLoop() {
+
+
+    // Make sure monitoring switch is still enabled
+
+    if(triggerSwitch.currentValue("switch") != "on") {
+
+        logDebug "Trigger switch is off. Stopping polling."
+        log.debug "Trigger Switch = ${triggerSwitch.currentValue("switch")}" // added to see what the state of the switch is.
+        stopMonitoring()
+        return
+
+    }
+
+
+    if(state.loopCounter == null) {
+        state.loopCounter = 0
+    }
+
+
+    state.loopCounter++
+
+
+    if(state.loopCounter >= state.refreshCounter) {
+
+
+        logDebug "Running full FireBoard refresh"
+
+        /*
+         * FireBoard driver refresh performs:
+         *
+         * GetTemperature()
+         * ListAllDevices()
+         *
+         * Drive logging is disabled.
+         */
+
+        fireboardDevice.refresh()
+        
+        state.loopCounter = 0
+
+
+    }
+    else {
+
+
+        logDebug "Running FireBoard temperature update"
+
+        fireboardDevice.GetTemperature()
+
+
+    }
+
+    monitorTemperatures()
+
+    /*
+     * Schedule next poll.
+     *
+     * overwrite:true prevents multiple polling loops
+     * if the hub becomes delayed or the switch is toggled.
+     */
+
+    runIn(
+        pollSeconds.toInteger(),
+        "pollLoop",
+        [
+            overwrite:true
+        ]
+    )
+
+
+}
+
+
+/**************************************************************************************************
+ *
+ * Calculate how many temperature polls occur before a full refresh.
+ *
+ * Example:
+ *
+ * Poll every 20 seconds
+ * Refresh every 5 minutes
+ *
+ * (5 * 60) / 20 = 15 polls
+ *
+ **************************************************************************************************/
+
+def calculateRefreshCounter() {
+
+
+    Integer pollTime = pollSeconds.toInteger()
+
+    Integer refreshTime = refreshMinutes.toInteger() * 60
+    
+    Integer count = Math.floor(
+        refreshTime / pollTime
+    )
+
+
+    if(count < 1) {
+
+        count = 1
+
+    }
+
+
+    logDebug "Refresh counter calculated as ${count}"
+
+
+    return count
+
+}
+
+/**************************************************************************************************
+ *
+ * API Limit Validation
+ *
+ * Maximum:
+ *
+ * 17 calls per rolling 5 minutes
+ *
+ * GetTemperature = 1 call
+ * refresh = 2 calls
+ * refresh + Drive Logging = 3 calls
+ **************************************************************************************************/
+
+def validateApiLimits() {
+
+
+    Integer pollTime = pollSeconds.toInteger()
+
+    Integer refreshTime = refreshMinutes.toInteger()
+
+
+    /*
+     * Determine refresh API cost
+     */
+
+    Integer refreshCost = 2
+
+    def driveLogging = fireboardDevice.getSetting("HasDrive")
+    def refreshSetting = fireboardDevice.getSetting("RefreshRate")
+    
+    logDebug "FireBoard Settings: RefreshRate=${refreshSetting}, HasDrive=${driveLogging}"
+    
+    String driveStatus = 
+    (driveLogging == true || driveLogging == null) ? "Enabled" : "Disabled"
+
+    if(driveLogging == true || driveLogging == null) {
+
+        refreshCost = 3
+
+    }
+
+
+    /*
+     * Calls in a rolling 5 minute window
+     */
+
+    Double temperatureCalls =
+        300.0 / pollTime
+
+
+    Double refreshes =
+        5.0 / refreshTime
+
+
+
+    /*
+     * A refresh already includes GetTemperature().
+     *
+     * Our loop does:
+     *
+     * Normal cycles:
+     *      GetTemperature()
+     *
+     * Refresh cycle:
+     *      refresh()
+     *
+     * Therefore:
+     *
+     * Number of normal temperature calls
+     * plus refresh calls.
+     */
+
+    Double totalCalls =
+        temperatureCalls +
+        (refreshes * (refreshCost - 1))
+
+
+
+    logDebug """
+    FireBoard API Calculation:
+
+    Temperature Poll:
+    ${pollTime} seconds
+
+    Full Refresh:
+    Every ${refreshTime} minutes
+
+    Drive Logging:
+    ${driveStatus}
+
+    Refresh API Cost:
+    ${refreshCost}
+
+    Temperature Poll Calls:
+    ${temperatureCalls}
+
+    Refresh Additional Calls:
+    ${(refreshes * (refreshCost - 1))}
+
+    Total Calls / 5 Minutes:
+    ${totalCalls.round(2)}
+    """
+
+
+
+    if(totalCalls > 17) {
+
+
+        state.apiWarning =
+        """
+        Polling settings exceed FireBoard API limits.
+
+        Current:
+        ${totalCalls.round(2)} calls per 5 minutes
+
+        Maximum:
+        17 calls per 5 minutes
+        """
+
+        return false
+
+    }
+
+
+    state.apiWarning = null
+
+    return true
+
+}
+/**************************************************************************************************
+ *
+ * Verify FireBoard Device Configuration
+ *
+ **************************************************************************************************/
+
+def verifyFireBoardSettings() {
+
+    def warnings = []
+
+
+    def refreshSetting = fireboardDevice.getSetting("RefreshRate")
+
+    def driveLogging = fireboardDevice.getSetting("HasDrive")
+    
+    String driveStatus = 
+    (driveLogging == true || driveLogging == null) ? "Enabled" : "Disabled"
+    
+    if(refreshSetting != null && refreshSetting != "Manual") {
+
+        warnings << 
+        "FireBoard Refresh Rate is set to ${refreshSetting}. " +
+        "Set it to Manual to prevent duplicate polling."
+
+    }
+
+
+    if(driveLogging == true || driveLogging == null) {
+
+        warnings <<
+        "FireBoard Drive Logging is enabled. " +
+        "API calculations will include additional calls."
+
+    }
+
+
+    if(warnings) {
+
+        warnings.each {
+            log.warn "FireBoard Monitor: ${it}"
+        }
+
+        state.fireboardWarnings = warnings
+
+        return false
+
+    }
+
+
+    state.fireboardWarnings = []
+
+    return true
+
+}
+
+/**************************************************************************************************
+ *
+ * Stop Monitoring
+ *
+ **************************************************************************************************/
+
+def stopMonitoring() {
+
+    logInfo "Stopping FireBoard Monitor"
+
+    unschedule("pollLoop")
+
+    state.loopCounter = 0
+    state.refreshCounter = 0
+
+    logDebug "Polling stopped"
+
+}
+
+/**************************************************************************************************
+ *
+ * Validate Sensor Assignments
+ *
+ **************************************************************************************************/
+
+def validateSensorAssignments() {
+
+    logDebug "Running sensor assignment validation"
+
+    if(!grillSensors || !foodSensors) {
+
+        return true
+
+    }
+
+
+    def grillIds = grillSensors.collect {
+        it.id
+    }
+
+
+    def foodIds = foodSensors.collect {
+        it.id
+    }
+
+
+    def overlap = grillIds.intersect(foodIds)
+
+
+    if(overlap) {
+
+        def names = []
+
+
+        overlap.each { id ->
+
+            def sensor = grillSensors.find {
+                it.id == id
+            }
+
+            if(sensor) {
+
+                names << sensor.label
+
+            }
+
+        }
+
+
+        log.warn """
+FireBoard Monitor:
+
+The following sensors are assigned as both Grill and Food sensors:
+
+${names.join(", ")}
+
+Each sensor can only be assigned one role.
+"""
+
+
+        return false
+
+    }
+
+
+    return true
+
+}
+
+/**************************************************************************************************
+ *
+ * Temperature Monitoring
+ *
+ **************************************************************************************************/
+
+def monitorTemperatures() {
+
+    processGrillTemperatures()
+
+    processFoodTemperatures()
+
+}
+
+
+def processGrillTemperatures() {
+
+    logDebug "Grill State Count: ${state.grillStatus?.size()}"
+    
+    def updatedGrill = state.grillStatus.collect { grill ->
+
+        def sensor = grillSensors.find {
+            it.displayName == grill.sensor
+        }
+
+        if(sensor) {
+            grill.currentTemp = sensor.currentTemperature
+        }
+
+
+        if(grill.currentTemp >= grill.targetTemp &&
+           !grill.targetAlertSent) {
+
+            grill.targetAlertSent = true
+
+            sendAlert(
+                "${grill.sensor} reached target temperature of ${grill.targetTemp} degrees"
+            )
+        }
+
+
+        if(grill.currentTemp <= grill.lowAlert &&
+           !grill.lowAlertSent) {
+
+            grill.lowAlertSent = true
+
+            sendAlert(
+                "${grill.sensor} temperature is low. Current temperature ${grill.currentTemp} degrees"
+            )
+
+        }
+
+
+        if(grill.currentTemp > grill.lowAlert) {
+
+            grill.lowAlertSent = false
+
+        }
+
+
+        if(grill.currentTemp >= grill.highAlert &&
+           !grill.highAlertSent) {
+
+            grill.highAlertSent = true
+
+            sendAlert(
+                "${grill.sensor} temperature is high. Current temperature ${grill.currentTemp} degrees"
+            )
+
+        }
+
+
+        if(grill.currentTemp < grill.highAlert) {
+
+            grill.highAlertSent = false
+
+        }
+
+
+        logDebug """
+            Grill:
+            Sensor: ${grill.sensor}
+            Temp: ${grill.currentTemp}
+            Target: ${grill.targetTemp}
+            Low: ${grill.lowAlert}
+            High: ${grill.highAlert}
+            """
+
+        return grill
+
+    }
+
+    state.grillStatus = updatedGrill
+}
+
+def processFoodTemperatures() {
+
+    logDebug "Food State Count: ${state.foodStatus?.size()}"
+    
+    def updatedFood = state.foodStatus.collect { food ->
+
+        def sensor = foodSensors.find {
+            it.displayName == food.sensor
+        }
+
+        if(sensor) {
+            food.currentTemp = sensor.currentTemperature
+        }
+
+
+        if(food.flipTemp &&
+           food.currentTemp >= food.flipTemp &&
+           !food.flipAlertSent) {
+
+
+            food.flipAlertSent = true
+
+            sendAlert(
+                "${food.sensor} reached flip temperature of ${food.flipTemp} degrees"
+            )
+
+        }
+
+
+        if(food.currentTemp >= food.targetTemp &&
+           !food.doneAlertSent) {
+
+
+            food.doneAlertSent = true
+            food.done = true
+
+            sendAlert(
+                "${food.sensor} reached target temperature of ${food.targetTemp} degrees"
+            )
+
+        }
+
+
+         logDebug """
+            Food:
+            Sensor: ${food.sensor}
+            Temp: ${food.currentTemp}
+            Target: ${food.targetTemp}
+            Flip: ${food.flipTemp}
+            Done: ${food.done}
+            """
+
+        return food
+
+    }
+
+    state.foodStatus = updatedFood
+
+}
+
+/**************************************************************************************************
+ *
+ * Temperature Setting Helpers
+ *
+ **************************************************************************************************/
+
+def getGrillTarget() {
+
+    if(useHubVariables) {
+
+        return getHubVariableValue(grillTargetVariable)
+
+    }
+
+    return grillTargetTemp as BigDecimal
+
+}
+
+
+def getGrillLow() {
+
+
+    if(useHubVariables && grillLowOffsetVariable) {
+
+
+        def offset = getHubVariableValue(grillLowOffsetVariable)
+
+
+        return getGrillTarget() - offset
+
+
+    }
+
+
+    return getGrillTarget() - (grillLowOffset ?: 0)
+
+}
+
+
+def getGrillHigh() {
+
+
+    if(useHubVariables && grillHighOffsetVariable) {
+
+
+        def offset = getHubVariableValue(grillHighOffsetVariable)
+
+
+        return getGrillTarget() + offset
+
+
+    }
+
+
+    return getGrillTarget() + (grillHighOffset ?: 0)
+
+}
+
+
+def getFoodTarget() {
+
+
+    if(useHubVariables) {
+
+
+        return getHubVariableValue(foodTargetVariable)
+
+
+    }
+
+
+    return foodTargetTemp as BigDecimal
+
+}
+
+def getFoodFlip() {
+
+
+    if(useHubVariables && foodFlipVariable) {
+
+
+        return getHubVariableValue(foodFlipVariable)
+
+
+    }
+
+
+    return foodFlipTemp ? foodFlipTemp as BigDecimal : null
+
+}
+
+/**************************************************************************************************
+ *
+ * Hub Variable Helpers
+ *
+ **************************************************************************************************/
+
+def getHubNumberVariables() {
+
+    def options = [:]
+
+    def variables = getGlobalVarsByType("integer")
+    variables.putAll(getGlobalVarsByType("bigdecimal"))
+
+    variables.each { name, variable ->
+
+        options[name] = name
+
+    }
+
+    return options
+
+}
+
+def getHubVariableValue(variableName) {
+
+    if(!variableName) {
+        return null
+    }
+
+    def variable = getGlobalVar(variableName)
+
+    if(variable == null) {
+
+        log.warn "FireBoard Monitor: Global Variable '${variableName}' not found"
+
+        return null
+
+    }
+
+    try {
+    return variable.value as BigDecimal
+        }
+        catch(Exception e) {
+            log.warn "Global Variable '${variableName}' is not numeric"
+            return null
+        }
+
+}
+
+def validateHubVariables() {
+
+    if(!useHubVariables) {
+        return true
+    }
+
+    def requiredVariables = []
+
+
+    if(grillTargetVariable) {
+        requiredVariables << grillTargetVariable
+    }
+
+
+    if(foodTargetVariable) {
+        requiredVariables << foodTargetVariable
+    }
+
+
+    if(grillLowOffsetVariable) {
+        requiredVariables << grillLowOffsetVariable
+    }
+
+
+    if(grillHighOffsetVariable) {
+        requiredVariables << grillHighOffsetVariable
+    }
+
+
+    if(foodFlipVariable) {
+        requiredVariables << foodFlipVariable
+    }
+
+
+    def missing = requiredVariables.findAll {
+        getGlobalVar(it) == null
+    }
+
+
+    if(missing) {
+
+        log.error """
+FireBoard Monitor:
+
+The following Hub Variables no longer exist:
+
+${missing.join("\n")}
+
+Please update the FireBoard Monitor settings.
+"""
+
+        return false
+    }
+
+
+    return true
+}
+
+void renameVariable(String oldName, String newName) {
+
+    settings.findAll { k, v -> v == oldName }.each { k, v ->
+        app.updateSetting(k, [type: "enum", value: newName])
+    }
+
+}
+
+/**************************************************************************************************
+ *
+ * Alert Handling
+ *
+ **************************************************************************************************/
+
+def sendAlert(message) {
+
+    if(!enableNotifications) {
+
+        logDebug "Notifications disabled: ${message}"
+
+        return
+
+    }
+
+
+    logInfo "Alert: ${message}"
+
+
+    /*
+     * Phone notifications
+     */
+
+    if(notificationDevices) {
+
+        notificationDevices.each { device ->
+
+            try {
+
+                device.deviceNotification(message)
+
+            }
+            catch(Exception e) {
+
+                log.warn "Notification failed for ${device.displayName}: ${e}"
+
+            }
+
+        }
+
+    }
+
+
+    /*
+     * TTS notifications
+     */
+
+    if(speechDevices) {
+
+        speechDevices.each { speaker ->
+
+            try {
+
+                speaker.speak(message)
+
+            }
+            catch(Exception e) {
+
+                log.warn "TTS failed for ${speaker.displayName}: ${e}"
+
+            }
+
+        }
+
+    }
+
+}
+
+/**************************************************************************************************
+ *
+ * Logging Helpers
+ *
+ **************************************************************************************************/
+
+def logInfo(msg) {
+
+    log.info "FireBoard Monitor: ${msg}"
+
+}
+
+
+def logDebug(msg) {
+
+    if(enableDebug) {
+
+        log.debug "FireBoard Monitor: ${msg}"
+
+    }
+}
+
+def logWarn(msg) {
+
+    log.warn "FireBoard Monitor: ${msg}"
+
+}
