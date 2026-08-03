@@ -3,7 +3,7 @@
  *
  *  FireBoard Monitor Companion App
  *
- *  Author: ChatGPT / tweas.
+ *  Author: ChatGPT / tweas
  *
  *  Version: 1.0.0
  *
@@ -11,13 +11,12 @@
  *
  *  Polls a FireBoard device while respecting the API rate limits.
  *
- *  Future Features
- *
- *      • Grill monitoring
- *      • Multiple meat probes
- *      • Notifications
- *      • Flip calculations
- *      • Hub Variable integration
+ *  Grill temperature monitoring
+ *  Multiple food probes
+ *  Custom notifications
+ *  Flip/stall calculations
+ *  Hub Variable integration
+ *  Editable alert messages
  *
  *------------------------------------------------------------------------------
  */
@@ -118,6 +117,18 @@ def initialize() {
     else {
 
         logDebug "No Calculate Flip Switch selected"
+
+    }
+    
+    if(clearAlertsSwitch) {
+
+        logDebug "Subscribing to Clear Alerts Switch: ${clearAlertsSwitch.displayName}"
+
+        subscribe(
+            clearAlertsSwitch,
+            "switch.on",
+            clearAlertsHandler
+        )
 
     }
 
@@ -298,9 +309,20 @@ def pageMain() {
                 title: "Calculate Flip Switch",
                 required: false,
                 multiple: false
+                    )
+
+        }
+        section("Alert Controls") {
+
+            input(
+                "clearAlertsSwitch",
+                "capability.switch",
+                title: "Clear Alerts",
+                required: false,
+                multiple: false
             )
 
-}
+        }
         section("Polling") {
 
             input(
@@ -334,12 +356,13 @@ def pageMain() {
             Drive Logging: Disabled
             """
 
-            if(state.fireboardWarnings) {
+            if(state.fireboardWarnings || state.apiWarning) {
 
                 paragraph """
                 <font color='red'>
                 <b>Warnings:</b><br>
-                ${state.fireboardWarnings.join("<br>")}
+                ${state.fireboardWarnings?.join("<br>")}
+				${state.apiWarning ?: ""}
                 </font>
                 """
 
@@ -373,6 +396,45 @@ def pageMain() {
             )
 
         }
+        
+        section("Notification Messages") {
+
+    input(
+        "msgGrillTarget",
+        "text",
+        title: "Grill At Target",
+        defaultValue: "%sensor% has reached the target temperature of %target%°."
+    )
+
+    input(
+        "msgGrillLow",
+        "text",
+        title: "Grill Low Temperature",
+        defaultValue: "%sensor% temperature is LOW (%current%°)."
+    )
+
+    input(
+        "msgGrillHigh",
+        "text",
+        title: "Grill High Temperature",
+        defaultValue: "%sensor% temperature is HIGH (%current%°)."
+    )
+
+    input(
+        "msgFoodFlip",
+        "text",
+        title: "Food Flip/Stall Alert",
+        defaultValue: "%sensor% has reached the flip/stall temperature of %flip%°."
+    )
+
+    input(
+        "msgFoodDone",
+        "text",
+        title: "Food Done",
+        defaultValue: "%sensor% has reached the target temperature of %target%°."
+    )
+
+}
         
         section("Logging") {
 
@@ -456,9 +518,91 @@ def calculateFlipHandler(evt) {
 
 
     recalculateFlip()
-
+	monitorTemperatures()
 
     calculateFlipSwitch.off()
+
+}
+
+/**************************************************************************************************
+ *
+ * Clear Alerts Handler
+ *
+ * Clears alert history without stopping monitoring.
+ *
+ **************************************************************************************************/
+
+def clearAlertsHandler(evt) {
+
+    logInfo "Clear Alerts requested"
+
+
+    if(triggerSwitch.currentValue("switch") != "on") {
+
+        logWarn "Cannot clear alerts. Monitoring is not active."
+
+        clearAlertsSwitch.off()
+
+        return
+
+    }
+
+
+    clearAlertStates()
+
+
+    if(clearAlertsSwitch) {
+        clearAlertsSwitch.off()
+    }
+
+}
+
+/**************************************************************************************************
+ *
+ * Clear Alert States
+ *
+ * User requested a new alert cycle.
+ * Resets alert flags without stopping FireBoard polling.
+ *
+ **************************************************************************************************/
+
+def clearAlertStates() {
+
+    logInfo "Clearing alert states"
+
+
+    /*
+     * Reset Grill Alerts
+     */
+
+    state.grillStatus = (state.grillStatus ?: []).collect { grill ->
+
+        grill.targetAlertSent = false
+        grill.lowAlertSent = false
+        grill.highAlertSent = false
+
+        return grill
+
+    }
+
+
+    /*
+     * Reset Food Alerts
+     */
+
+    state.foodStatus = (state.foodStatus ?: []).collect { food ->
+
+        food.flipAlertSent = false
+        food.doneAlertSent = false
+        food.done = false
+
+        return food
+
+    }
+
+
+    logDebug "Alert states cleared"
+
 
 }
 
@@ -951,6 +1095,14 @@ def validateApiLimits() {
      * Calls in a rolling 5 minute window
      */
 
+    if(pollTime < 5) {
+
+        log.warn "Polling interval too short."
+
+        return false
+
+    }
+
     Double temperatureCalls =
         300.0 / pollTime
 
@@ -1100,9 +1252,15 @@ def stopMonitoring() {
     logInfo "Stopping FireBoard Monitor"
 
     unschedule("pollLoop")
+	unschedule("startPolling")
+    if(calculateFlipSwitch) {
+        calculateFlipSwitch.off()
+    }
 
     state.loopCounter = 0
     state.refreshCounter = 0
+    state.grillStatus = []
+	state.foodStatus = []
 
     logDebug "Polling stopped"
 
@@ -1110,7 +1268,7 @@ def stopMonitoring() {
 
 /**************************************************************************************************
  *
- * Validate Sensor Assignments
+ * Validate Sensor Assignments and Sensor Selection
  *
  **************************************************************************************************/
 
@@ -1118,9 +1276,10 @@ def validateSensorAssignments() {
 
     logDebug "Running sensor assignment validation"
 
-    if(!grillSensors || !foodSensors) {
+    if(!grillSensors && !foodSensors) {
 
-        return true
+        log.warn "No temperature sensors selected."
+        return false
 
     }
 
@@ -1204,18 +1363,59 @@ def processGrillTemperatures() {
         }
 
         if(sensor) {
-            grill.currentTemp = sensor.currentTemperature
-        }
 
+            grill.currentTemp = sensor.currentTemperature
+
+
+            /*
+             * Refresh settings in case Hub Variables changed
+           	 *
+             * Target alert is a "grill ready" notification.
+             * Reset only if user changes the cooking target.
+             */
+
+            def newTarget = getGrillTarget()
+            def newLow    = getGrillLow()
+            def newHigh   = getGrillHigh()
+
+
+            if(grill.targetTemp != newTarget) {
+
+                logDebug """
+        Grill target changed:
+
+        Old:
+        ${grill.targetTemp}
+
+        New:
+        ${newTarget}
+
+        Resetting target alert.
+        """
+
+                grill.targetAlertSent = false
+
+            }
+
+
+            grill.targetTemp = newTarget
+            grill.lowAlert   = newLow
+            grill.highAlert  = newHigh
+
+        }
 
         if(grill.currentTemp >= grill.targetTemp &&
            !grill.targetAlertSent) {
 
             grill.targetAlertSent = true
 
-            sendAlert(
-                "${grill.sensor} reached target temperature of ${grill.targetTemp} degrees"
-            )
+            def message = buildMessage(msgGrillTarget, [
+                sensor : grill.sensor,
+                current: grill.currentTemp,
+                target : grill.targetTemp
+            ])
+
+            sendAlert(message)
         }
 
 
@@ -1224,38 +1424,80 @@ def processGrillTemperatures() {
 
             grill.lowAlertSent = true
 
-            sendAlert(
-                "${grill.sensor} temperature is low. Current temperature ${grill.currentTemp} degrees"
-            )
+            def message = buildMessage(msgGrillLow, [
+                sensor : grill.sensor,
+                current: grill.currentTemp,
+                target : grill.targetTemp,
+                low    : grill.lowAlert
+            ])
+
+            sendAlert(message)
 
         }
 
 
+        /*
+         * Reset LOW alert once temperature recovers.
+         *
+         * This creates hysteresis:
+         *
+         * Alert:
+         * Below low limit
+         *
+         * Reset:
+         * Back above low limit
+         */
+
         if(grill.currentTemp > grill.lowAlert) {
+
+            if(grill.lowAlertSent) {
+
+                logDebug "${grill.sensor} recovered above low temperature limit."
+
+            }
 
             grill.lowAlertSent = false
 
         }
-
 
         if(grill.currentTemp >= grill.highAlert &&
            !grill.highAlertSent) {
 
             grill.highAlertSent = true
 
-            sendAlert(
-                "${grill.sensor} temperature is high. Current temperature ${grill.currentTemp} degrees"
-            )
+            def message = buildMessage(msgGrillHigh, [
+                sensor : grill.sensor,
+                current: grill.currentTemp,
+                target : grill.targetTemp,
+                high   : grill.highAlert
+            ])
+
+            sendAlert(message)
 
         }
 
 
+        /*
+         * Reset HIGH alert once temperature drops.
+         *
+         * Alert:
+         * Above high limit
+         *
+         * Reset:
+         * Back below high limit
+         */
+
         if(grill.currentTemp < grill.highAlert) {
+
+            if(grill.highAlertSent) {
+
+                logDebug "${grill.sensor} recovered below high temperature limit."
+
+            }
 
             grill.highAlertSent = false
 
         }
-
 
         logDebug """
             Grill:
@@ -1284,7 +1526,67 @@ def processFoodTemperatures() {
         }
 
         if(sensor) {
+
             food.currentTemp = sensor.currentTemperature
+
+
+            /*
+             * Refresh target temperature.
+             *
+             * If target changes before completion,
+             * allow done alert again.
+             */
+
+            def newTarget = getFoodTarget()
+
+
+            if(food.targetTemp != newTarget) {
+
+                logDebug """
+        Food target changed:
+
+        Sensor:
+        ${food.sensor}
+
+        Old Target:
+        ${food.targetTemp}
+
+        New Target:
+        ${newTarget}
+
+        Resetting done alert.
+        """
+
+                food.doneAlertSent = false
+                food.done = false
+
+            }
+
+
+            food.targetTemp = newTarget
+
+
+            /*
+             * Only update manual flip temperatures.
+             *
+             * Automatic flip temperatures remain
+             * calculated from cook start.
+             */
+
+            if(food.flipMode == "MANUAL") {
+
+                def newFlip = getFoodFlip()
+
+                if(food.flipTemp != newFlip) {
+
+                    food.flipAlertSent = false
+
+                }
+
+                food.flipTemp = newFlip
+
+            }
+
         }
 
 
@@ -1295,9 +1597,14 @@ def processFoodTemperatures() {
 
             food.flipAlertSent = true
 
-            sendAlert(
-                "${food.sensor} reached flip temperature of ${food.flipTemp} degrees"
-            )
+            def message = buildMessage(msgFoodFlip, [
+                sensor : food.sensor,
+                current: food.currentTemp,
+                flip   : food.flipTemp,
+                target : food.targetTemp
+            ])
+
+            sendAlert(message)
 
         }
 
@@ -1309,9 +1616,13 @@ def processFoodTemperatures() {
             food.doneAlertSent = true
             food.done = true
 
-            sendAlert(
-                "${food.sensor} reached target temperature of ${food.targetTemp} degrees"
-            )
+            def message = buildMessage(msgFoodDone, [
+                sensor : food.sensor,
+                current: food.currentTemp,
+                target : food.targetTemp
+            ])
+
+            sendAlert(message)
 
         }
 
@@ -1605,6 +1916,24 @@ def sendAlert(message) {
         }
 
     }
+
+}
+
+/**************************************************************************************************
+ *
+ * Message Helpers
+ *
+ **************************************************************************************************/
+
+def buildMessage(template, values = [:]) {
+
+    def msg = template ?: ""
+
+    values.each { key, value ->
+        msg = msg.replace("%${key}%", value?.toString() ?: "")
+    }
+
+    return msg
 
 }
 
