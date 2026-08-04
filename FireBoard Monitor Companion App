@@ -616,7 +616,13 @@ def clearAlertStates() {
  **************************************************************************************************/
 
 def recalculateFlip(boolean useCurrentTemperature = true) {
+     if(!state.foodStatus) {
 
+            logWarn "No food sensors initialized. Cannot calculate flip."
+
+            return
+
+      }
 
     state.foodStatus = state.foodStatus.collect { food ->
 
@@ -635,9 +641,7 @@ def recalculateFlip(boolean useCurrentTemperature = true) {
             if(useCurrentTemperature) {
 
                 startTemp = sensor.currentTemperature as BigDecimal
-
                 food.cookStartTemp = startTemp
-
                 food.currentTemp = startTemp
 
             }
@@ -648,15 +652,22 @@ def recalculateFlip(boolean useCurrentTemperature = true) {
             }
 
 
-            food.flipTemp =
-                (
-                    startTemp +
-                    ((food.targetTemp - startTemp) / 2)
-                ).setScale(
-                    1,
-                    BigDecimal.ROUND_HALF_UP
+            food.flipTemp = Math.round(
+                startTemp +
+                ((food.targetTemp - startTemp) / 2)
+            )
+
+            food.lastCalculatedFlip = food.flipTemp
+            
+            // Update Hub Variable if assigned
+            if(useHubVariables && foodFlipVariable) {
+
+                setHubVariableValue(
+                    foodFlipVariable,
+                    food.flipTemp.toInteger()
                 )
 
+            }
 
             food.flipAlertSent = false
 
@@ -829,42 +840,43 @@ High Alert: ${grill.highAlert}
 
             BigDecimal flipTemp = getFoodFlip()
 
-
             /*
-             * If no manual flip temperature is provided,
-             * calculate halfway point.
+             * Only calculate if there is no existing flip value.
              */
 
-            if(!flipTemp) {
+            if(flipTemp == null) {
 
                 flipTemp =
-                    ((getFoodTarget() - startTemp) / 2) + startTemp
+                    (
+                        startTemp +
+                        ((getFoodTarget() - startTemp) / 2)
+                    ).setScale(
+                        0,
+                        BigDecimal.ROUND_HALF_UP
+                    )
 
-                flipTemp = flipTemp.setScale(1, BigDecimal.ROUND_HALF_UP)
+                if(useHubVariables && foodFlipVariable) {
+
+                    setHubVariableValue(
+                        foodFlipVariable,
+                        flipTemp
+                    )
+
+                }
 
             }
 
 
             def food = [
-
                 sensor: sensor.displayName,
-
                 cookStartTemp: startTemp,
-
                 currentTemp: startTemp,
-
                 targetTemp: getFoodTarget(),
-
                 flipTemp: flipTemp,
-                
-                flipMode: getFoodFlip() ? "MANUAL" : "AUTO",
-
+                lastCalculatedFlip: flipTemp,
                 done: false,
-
                 flipAlertSent: false,
-
                 doneAlertSent: false
-
             ]
 
 
@@ -1583,20 +1595,6 @@ def processFoodTemperatures() {
              * calculated from cook start.
              */
 
-            if(food.flipMode == "MANUAL") {
-
-                def newFlip = getFoodFlip()
-
-                if(food.flipTemp != newFlip) {
-
-                    food.flipAlertSent = false
-
-                }
-
-                food.flipTemp = newFlip
-
-            }
-
         }
 
 
@@ -1850,6 +1848,32 @@ Please update the FireBoard Monitor settings.
 
 
     return true
+}
+
+def setHubVariableValue(variableName, value) {
+
+    if(!variableName || value == null) {
+        return
+    }
+
+    def variable = getGlobalVar(variableName)
+
+    if(variable) {
+
+        setGlobalVar(
+            variableName,
+            value.toInteger().toString()
+        )
+
+        logDebug "Updated Hub Variable ${variableName} = ${value.toInteger()}"
+
+    }
+    else {
+
+        logWarn "Hub Variable '${variableName}' not found"
+
+    }
+
 }
 
 void renameVariable(String oldName, String newName) {
