@@ -580,6 +580,7 @@ def clearAlertStates() {
         grill.targetAlertSent = false
         grill.lowAlertSent = false
         grill.highAlertSent = false
+        grill.targetReached = false
 
         return grill
 
@@ -786,6 +787,8 @@ def initializeCook() {
                 highAlert: getGrillHigh(),
 
                 targetAlertSent: false,
+                
+                targetReached: false,
 
                 lowAlertSent: false,
 
@@ -1404,23 +1407,29 @@ def processGrillTemperatures() {
 
         }
 
-        if(grill.currentTemp >= grill.targetTemp &&
-           !grill.targetAlertSent) {
+        if(grill.currentTemp >= grill.targetTemp) {
 
-            grill.targetAlertSent = true
+            grill.targetReached = true
 
-            def message = buildMessage(msgGrillTarget, [
-                sensor : grill.sensor,
-                current: grill.currentTemp,
-                target : grill.targetTemp
-            ])
+            if(!grill.targetAlertSent) {
 
-            sendAlert(message)
+                grill.targetAlertSent = true
+
+                def message = buildMessage(msgGrillTarget, [
+                    sensor : grill.sensor,
+                    current: grill.currentTemp,
+                    target : grill.targetTemp
+                ])
+
+                sendAlert(message)
+
+            }
+
         }
 
-
-        if(grill.currentTemp <= grill.lowAlert &&
-           !grill.lowAlertSent) {
+            if(grill.targetReached &&
+               grill.currentTemp <= grill.lowAlert &&
+               !grill.lowAlertSent) {
 
             grill.lowAlertSent = true
 
@@ -1460,17 +1469,18 @@ def processGrillTemperatures() {
 
         }
 
-        if(grill.currentTemp >= grill.highAlert &&
+        if(grill.targetReached &&
+           grill.currentTemp >= grill.highAlert &&
            !grill.highAlertSent) {
 
-            grill.highAlertSent = true
+                grill.highAlertSent = true
 
-            def message = buildMessage(msgGrillHigh, [
-                sensor : grill.sensor,
-                current: grill.currentTemp,
-                target : grill.targetTemp,
-                high   : grill.highAlert
-            ])
+                def message = buildMessage(msgGrillHigh, [
+                    sensor : grill.sensor,
+                    current: grill.currentTemp,
+                    target : grill.targetTemp,
+                    high   : grill.highAlert
+                ])
 
             sendAlert(message)
 
