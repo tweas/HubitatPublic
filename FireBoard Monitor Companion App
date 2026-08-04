@@ -1550,7 +1550,32 @@ def processFoodTemperatures() {
         if(sensor) {
 
             food.currentTemp = sensor.currentTemperature
+			if(useHubVariables && foodFlipVariable) {
 
+                def hubFlip = getFoodFlip()
+
+                if(hubFlip != null && hubFlip != food.flipTemp) {
+
+                    logInfo """
+            Food flip temperature changed from Hub Variable:
+
+            Sensor:
+            ${food.sensor}
+
+            Old Flip:
+            ${food.flipTemp}
+
+            New Flip:
+            ${hubFlip}
+            """
+
+                    food.flipTemp = hubFlip
+                    food.lastCalculatedFlip = hubFlip
+                    food.flipAlertSent = false
+
+                }
+
+            }
 
             /*
              * Refresh target temperature.
