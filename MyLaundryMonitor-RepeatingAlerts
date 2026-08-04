@@ -18,7 +18,7 @@ definition(
   name: "Laundry Monitor-Repeating Alerts",
   namespace: "tweas",
   author: "Tray Eason",
-  description: "Using a power meterto monitor the laundry cycle and alert when it's done. Also turns on switches (or lights with switch capability)",
+  description: "Using a switch with powerMonitor capability, monitor the laundry cycle and alert when it's done.",
   category: "Convenience",
   iconUrl: "https://s3.amazonaws.com/smartthings-device-icons/Appliances/appliances8-icn.png",
   iconX2Url: "https://s3.amazonaws.com/smartthings-device-icons/Appliances/appliances8-icn@2x.png")
@@ -34,6 +34,10 @@ preferences {
     input "cycle_start_power_threshold", "number", title: "Start cycle when power consumption goes above (W)", required: true
     input "cycle_end_power_threshold", "number", title: "Stop cycle when power consumption drops below (W) ...", required: true
     input "cycle_end_wait", "number", title: "... for at least this long (min)", required: true
+  }
+    
+ section ("Switch Used to Disable or Cancel") {
+    input "switchDisable", "capability.switch", title: "If this switch is off, the app is disabled or will cancel the current instance", required: true, multiple:false
   }
   
   section ("Send This Message") {
@@ -71,38 +75,53 @@ def updated() {
 
 def init() {
   subscribe(meter, "power", handler)
-  //subscribe(switchEnd, "switch",repeatMessages)
+  
 }
 
 def handler(evt) {
     def latestPower = meter.currentValue("power")
-    log.trace "Power: ${latestPower}W"
-
-    if (!state.cycleOn && latestPower > cycle_start_power_threshold) {
+    def swValueDisable = switchDisable.currentValue("switch")
+    
+    log.trace "Power: ${latestPower}W - Cycle On: ${state.cycleOn} - Cycle Off: ${state.cycleOff}"
+            
+    if (!state.cycleOn && latestPower > cycle_start_power_threshold && swValueDisable == "on") {
         cycleOn(evt)
     }
-    // If power drops below threshold, wait for a few minutes.
-    else if (state.cycleOn && latestPower <= cycle_end_power_threshold) {
-        runIn(cycle_end_wait * 60, "cycleOff")
+    // If power drops below threshold for the first update, schedule the cycle off notification for the wait time in minutes.
+    else if (state.cycleOn && !state.cycleOff && latestPower <= cycle_end_power_threshold) {
+        state.cycleOff = true
+        log.trace "Started endcycle wait"
+        if (swValueDisable == "off"){
+                unschedule()
+                endEarly(evt)     
+        }
+        //unschedule ("cycleOff")
+        runIn(cycle_end_wait * 60, "cycleOff",[overwrite: true])  //Original code had cycle end wait as seconds. Had to change to minutes
+        //runIn(cycle_end_wait, "cycleOff") //Had to update code.  Something changed to set the timer from seconds to minutes.
+    }
+    // If power is above cycle off threshold, unschedule any waits.  Added 6/21/21
+    else if (state.cycleOn && state.cycleOff && latestPower > cycle_end_power_threshold) {
+        state.cycleOff = false
+        
+        log.trace "Cancel endcycle wait"
+        unschedule ("cycleOff")
     }
 }
 
 private repeatMessages(evt) {
     def swValue = switchEnd.currentValue("switch")
-    log.debug "Starting Repeat Messages every ${repeatTimer} Minutes - Swvalue is ${swValue} inside"
+    //log.trace "Repeat Messages every ${repeatTimer} Minutes - Swvalue is ${swValue}"
     
     if (swValue == "on"){    
         log.trace "Repeating Messages - Swvalue is ${swValue}"
         sendMessages()
     }
     else if (swValue == "off"){
-        unsubscribe(switchEnd)
         unschedule()
         log.trace "Repeating Messages ended"
     }
     else {
         state.rptMsgOn = false
-        unsubscribe(switchEnd)
         unschedule()
         log.trace "Repeating Messages error - switch status not valid"
     }
@@ -111,62 +130,89 @@ private repeatMessages(evt) {
 
 private cycleOn(evt) {
     state.cycleOn = true
+    state.cycleOff = false
     if (switchesStart) {
           switchesStart*.off()
         }
     log.trace "Cycle started. Cycle state: On"
+    log.trace "Low Power Threshold is ${cycle_end_power_threshold} Watts"
+    log.trace "Wait Cycle is ${cycle_end_wait} Minutes"
+    
 }
 
 private cycleOff(evt) {
+    state.cycleOff = false
     def latestPower = meter.currentValue("power")
-    log.trace "Power: ${latestPower}W"
+    def swValueDisable2 = switchDisable.currentValue("switch")
+    log.trace "Checking to see if we need to end the cycle - Power: ${latestPower}W"
 
     // If power is still below threshold, end cycle.
     if (state.cycleOn && latestPower <= cycle_end_power_threshold) {
         state.cycleOn = false
         log.trace "Cycle ended"
+        //log.trace "Cycle On: ${state.cycleOn}"
+        //log.trace "Cycle Off: ${state.cycleOff}"
         
-        if (additionalSwitches) {
+        if (additionalSwitches && swValueDisable2 == "on") {
           additionalSwitches*.on()
         }
+        if (swValueDisable2 == "on"){
+            if (switchEnd) {
+              switchEnd*.on()
+              sendMessages()
+              switch(repeatTimer){
+                 case 1:
+                   log.trace "Repeat Messages every ${repeatTimer} Minutes"
+                   runEvery1Minute("repeatMessages")
+                   break
+                 case 5:
+                   log.trace "Repeat Messages every ${repeatTimer} Minutes"
+                   runEvery5Minutes("repeatMessages")
+                   break
+                 case 10:
+                   log.trace "Repeat Messages every ${repeatTimer} Minutes"
+                   runEvery10Minutes("repeatMessages")
+                   break
+                 case 15:
+                   log.trace "Repeat Messages every ${repeatTimer} Minutes"
+                   runEvery15Minutes("repeatMessages")
+                   break
+                 case 30:
+                   log.trace "Repeat Messages every ${repeatTimer} Minutes"
+                   runEvery30Minutes("repeatMessages")
+                   break
+                 case 60:
+                   log.trace "Repeat Messages every ${repeatTimer} Minutes"
+                   runEvery1Hour("repeatMessages")
+                   break
+                 case 180:
+                   log.trace "Repeat Messages every ${repeatTimer} Minutes"
+                   runEvery3Hours("repeatMessages")
+                   break
+                 default:
+                   log.debug "Invalid Timer Entry"
+                   unschedule()
+                   break
+	          }
+            }
         
-        if (switchEnd) {
-          switchEnd*.on()
-          sendMessages()
-          switch(repeatTimer){
-             case 1:
-               runEvery1Minute("repeatMessages")
-               break
-             case 5:
-               runEvery5Minutes("repeatMessages")
-               break
-             case 10:
-               runEvery10Minutes("repeatMessages")
-               break
-             case 15:
-               runEvery15Minutes("repeatMessages")
-               break
-             case 30:
-               runEvery30Minutes("repeatMessages")
-               break
-             case 60:
-               runEvery1Hour("repeatMessages")
-               break
-             case 180:
-               runEvery3Hours("repeatMessages")
-               break
-             default:
-               log.debug "Invalid Timer Entry"
-               unschedule()
-               break
-	  }
-        }
-        else{
-          log.debug "Repeat Message flag is false"
-          sendMessages()
+            else{
+              log.trace "Repeat Message flag is false"
+              sendMessages()
+              unschedule()
+            }
         }
     }
+    //unschedule()
 }
+
+private endEarly(evt) {
+    state.cycleOff = false
+    state.cycleOn = false
+    log.trace "Disable Switch is off - Cycle Canceled"
+    unschedule()
+}
+
 
 private sendMessages(evt) {
         log.trace "Sending Messages"
