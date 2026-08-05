@@ -603,7 +603,7 @@ def clearAlertStates() {
 
 
     logDebug "Alert states cleared"
-
+	logInfo("Alert states cleared")
 
 }
 
@@ -671,22 +671,12 @@ def recalculateFlip(boolean useCurrentTemperature = true) {
 
             food.flipAlertSent = false
 
-
-            logInfo """
-Flip recalculated:
-
-Sensor:
-${food.sensor}
-
-Start Temperature:
-${startTemp}
-
-Target:
-${food.targetTemp}
-
-New Flip Temperature:
-${food.flipTemp}
-"""
+			logInfo(
+			    "Flip recalculated for ${food.sensor}: " +
+			    "Start=${startTemp}°, " +
+			    "Target=${food.targetTemp}°, " +
+			    "Flip=${food.flipTemp}°"
+			)
 
         }
 
@@ -748,8 +738,11 @@ def startMonitoring() {
 	logDebug "FireBoard driver scheduler disabled. App polling active."
 
 	initializeCook()
-    
-    runIn(
+	    logInfo(
+	    "Polling every ${pollSeconds} seconds " +
+	    "with full refresh every ${refreshMinutes} minutes."
+		)
+	    runIn(
         startupDelay,
         startPolling,
         [
@@ -809,6 +802,13 @@ def initializeCook() {
 
 
             state.grillStatus << grill
+			logInfo(
+			    "Grill initialized: ${grill.sensor}, " +
+			    "Current=${grill.currentTemp}°, " +
+			    "Target=${grill.targetTemp}°, " +
+			    "Low=${grill.lowAlert}°, " +
+			    "High=${grill.highAlert}°"
+			)
 
 
             logDebug """
@@ -881,7 +881,12 @@ High Alert: ${grill.highAlert}
 
 
             state.foodStatus << food
-
+			logInfo(
+				"Food initialized: ${food.sensor}, " +
+				"Current=${food.cookStartTemp}°, " +
+				"Target=${food.targetTemp}°, " +
+				"Flip=${food.flipTemp}°"
+			)
 
             logDebug """
 Initialized Food:
@@ -929,6 +934,7 @@ def startPolling() {
     logDebug "Performing initial FireBoard refresh"
 
     fireboardDevice.refresh()
+	logInfo("Initial FireBoard refresh requested")
     
     monitorTemperatures()
     
@@ -1194,11 +1200,15 @@ def validateApiLimits() {
         return false
 
     }
-
+	logInfo(
+		    "FireBoard API usage: ${totalCalls.round(2)} " +
+		    "calls per 5 minutes."
+	)
 
     state.apiWarning = null
 
     return true
+	
 
 }
 /**************************************************************************************************
@@ -1395,7 +1405,10 @@ def processGrillTemperatures() {
 
 
             if(grill.targetTemp != newTarget) {
-
+				logInfo(
+				    "Grill target changed for ${grill.sensor}: " +
+				    "${grill.targetTemp}° → ${newTarget}°"
+				)
                 logDebug """
         Grill target changed:
 
@@ -1550,7 +1563,7 @@ def processFoodTemperatures() {
         if(sensor) {
 
             food.currentTemp = sensor.currentTemperature
-			if(useHubVariables && foodFlipVariable) {
+		if(useHubVariables && foodFlipVariable) {
 
                 def hubFlip = getFoodFlip()
 
@@ -1588,7 +1601,10 @@ def processFoodTemperatures() {
 
 
             if(food.targetTemp != newTarget) {
-
+				logInfo(
+				    "Food target changed for ${food.sensor}: " +
+				    "${food.targetTemp}° → ${newTarget}°"
+				)
                 logDebug """
         Food target changed:
 
@@ -1611,7 +1627,19 @@ def processFoodTemperatures() {
 
 
             food.targetTemp = newTarget
-
+				def newFlip = getFoodFlip()
+				
+				if(newFlip != null && food.flipTemp != newFlip) {
+				
+				    logInfo(
+				        "Food flip changed for ${food.sensor}: " +
+				        "${food.flipTemp}° → ${newFlip}°"
+				    )
+				
+				    food.flipTemp = newFlip
+				    food.flipAlertSent = false
+				
+				}
 
             /*
              * Only update manual flip temperatures.
