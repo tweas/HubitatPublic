@@ -243,48 +243,49 @@ def pageMain() {
 
 
         section("Grill Temperature Settings") {
-
-            input(
-                "grillTargetTemp",
-                "number",
-                title: "Grill Target Temperature",
-                defaultValue: 450
-            )
-
-            input(
-                "grillLowOffset",
-                "number",
-                title: "Grill Low Offset",
-                defaultValue: 50
-            )
-
-            input(
-                "grillHighOffset",
-                "number",
-                title: "Grill High Offset",
-                defaultValue: 50
-            )
-
-        }
+		
+		    input(
+		        "grillTargetTemp",
+		        "number",
+		        title: "Grill Target Temperature",
+		        defaultValue: 450
+		    )
+		
+		    input(
+		        "grillLowOffset",
+		        "number",
+		        title: "Grill Low Offset",
+		        defaultValue: 50
+		    )
+		
+		    input(
+		        "grillHighOffset",
+		        "number",
+		        title: "Grill High Offset",
+		        defaultValue: 50
+		    )
+		
+		   	
+		}
 
 
         section("Food Temperature Settings") {
 
-            input(
-                "foodTargetTemp",
-                "number",
-                title: "Food Target Temperature",
-                defaultValue: 145
-            )
-
-            input(
-                "foodFlipTemp",
-                "number",
-                title: "Food Flip/Stall Temperature (Optional)",
-                required:false
-            )
-
-        }
+		    input(
+		        "foodTargetTemp",
+		        "number",
+		        title: "Food Target Temperature",
+		        defaultValue: 145
+		    )
+		
+		    input(
+		        "foodFlipTemp",
+		        "number",
+		        title: "Food Flip/Stall Temperature (Optional)",
+		        required:false
+		    )
+		
+		}
 
     }
 
@@ -321,6 +322,21 @@ def pageMain() {
                 required: false,
                 multiple: false
             )
+                         input(
+		        "grillTargetHoldMinutes",
+		        "number",
+		        title: "Grill Target Hold Time (minutes)",
+		        description: "Temperature must remain at or above target for this long before the target alert is sent. 0 = alert immediately.",
+		        defaultValue: 0
+		    )		
+		    
+            input(
+		        "flipAlertStartupDelay",
+		        "number",
+		        title: "Flip Alert Startup Delay (minutes)",
+		        description: "Prevents a flip alert from triggering immediately from temperatures left over from the previous cook.",
+		        defaultValue: 5
+		    )
 
         }
         section("Polling") {
@@ -345,7 +361,7 @@ def pageMain() {
                 title: "Refresh Every (minutes)",
                 defaultValue: 5
             )
-
+            
         }
 
         section("FireBoard Status") {
@@ -461,13 +477,18 @@ def initializeState() {
     state.loopCounter = 0
 
     state.refreshCounter = calculateRefreshCounter()
+
+    /*
+     * Flip alerts are disabled temporarily when
+     * a new monitoring session starts.
+     */
+    state.flipAlertEnabledAt = null
     
-   if(state.grillStatus == null)
+    if(state.grillStatus == null)
         state.grillStatus = []
 
-   if(state.foodStatus == null)
+    if(state.foodStatus == null)
         state.foodStatus = []
-
 
 }
 /**************************************************************************************************
@@ -696,7 +717,18 @@ def recalculateFlip(boolean useCurrentTemperature = true) {
 def startMonitoring() {
 
     log.info "Starting FireBoard Monitor"
-
+		/*
+	     * Prevent false Flip alerts caused by the FireBoard
+	     * initially reporting temperatures from the previous cook.
+	     */
+	    Integer flipDelayMinutes = flipAlertStartupDelay?.toInteger() ?: 0
+	
+	    state.flipAlertEnabledAt =
+	        now() + (flipDelayMinutes * 60 * 1000)
+	
+	    logInfo(
+	        "Flip alerts will be enabled in ${flipDelayMinutes} minute(s)."
+	    )
 
     if(!validateHubVariables()) {
 
@@ -780,25 +812,29 @@ def initializeCook() {
 
             def grill = [
 
-                sensor: sensor.displayName,
-
-                currentTemp: sensor.currentTemperature,
-
-                targetTemp: getGrillTarget(),
-
-                lowAlert: getGrillLow(),
-
-                highAlert: getGrillHigh(),
-
-                targetAlertSent: false,
-                
-                targetReached: false,
-
-                lowAlertSent: false,
-
-                highAlertSent: false
-
-            ]
+			    sensor: sensor.displayName,
+			
+			    currentTemp: sensor.currentTemperature,
+			
+			    targetTemp: getGrillTarget(),
+			
+			    lowAlert: getGrillLow(),
+			
+			    highAlert: getGrillHigh(),
+			
+			    targetHoldMinutes: grillTargetHoldMinutes?.toInteger() ?: 0,
+			
+			    targetAlertSent: false,
+			
+			    targetReached: false,
+			
+			    targetReachedTime: null,
+			
+			    lowAlertSent: false,
+			
+			    highAlertSent: false
+			
+			]
 
 
             state.grillStatus << grill
@@ -1284,6 +1320,7 @@ def stopMonitoring() {
 
     state.loopCounter = 0
     state.refreshCounter = 0
+	state.flipAlertEnabledAt = null
     state.grillStatus = []
 	state.foodStatus = []
 
@@ -1405,25 +1442,32 @@ def processGrillTemperatures() {
 
 
             if(grill.targetTemp != newTarget) {
-				logInfo(
-				    "Grill target changed for ${grill.sensor}: " +
-				    "${grill.targetTemp}° → ${newTarget}°"
-				)
-                logDebug """
-        Grill target changed:
+			
+			    logInfo(
+			        "Grill target changed for ${grill.sensor}: " +
+			        "${grill.targetTemp}° → ${newTarget}°"
+			    )
+			
+			    logDebug """
+			Grill target changed:
+			
+			Old:
+			${grill.targetTemp}
+			
+			New:
+			${newTarget}
+			
+			Resetting target alert and hold timer.
+			"""
+			
+			    grill.targetAlertSent = false
+			    grill.targetReached = false
+			    grill.targetReachedTime = null
 
-        Old:
-        ${grill.targetTemp}
-
-        New:
-        ${newTarget}
-
-        Resetting target alert.
-        """
-
-                grill.targetAlertSent = false
-
-            }
+				grill.targetHoldMinutes =
+    				grillTargetHoldMinutes?.toInteger() ?: 0
+			
+			}
 
 
             grill.targetTemp = newTarget
@@ -1432,25 +1476,124 @@ def processGrillTemperatures() {
 
         }
 
-        if(grill.currentTemp >= grill.targetTemp) {
-
-            grill.targetReached = true
-
-            if(!grill.targetAlertSent) {
-
-                grill.targetAlertSent = true
-
-                def message = buildMessage(msgGrillTarget, [
-                    sensor : grill.sensor,
-                    current: grill.currentTemp,
-                    target : grill.targetTemp
-                ])
-
-                sendAlert(message)
-
-            }
-
-        }
+			/*
+			 * Grill Target / Hold Time
+			 *
+			 * The grill must remain at or above the target
+			 * temperature for the configured hold time.
+			 *
+			 * Hold Time = 0 means alert immediately.
+			 */
+			
+			if(grill.currentTemp >= grill.targetTemp) {
+			
+			    /*
+			     * Start the hold timer when the grill first
+			     * reaches the target.
+			     */
+			    if(!grill.targetReached) {
+			
+			        grill.targetReached = true
+			        grill.targetReachedTime = now()
+			
+			        logInfo(
+			            "${grill.sensor} reached target temperature of " +
+			            "${grill.targetTemp}°. " +
+			            "Starting ${grill.targetHoldMinutes ?: 0} minute hold."
+			        )
+			    }
+			
+			
+			    if(!grill.targetAlertSent) {
+			
+			        Integer holdMinutes =
+			            grill.targetHoldMinutes?.toInteger() ?: 0
+			
+			        /*
+			         * Hold time of zero means no delay.
+			         */
+			        if(holdMinutes == 0) {
+			
+			            grill.targetAlertSent = true
+			
+			            def message = buildMessage(msgGrillTarget, [
+			                sensor : grill.sensor,
+			                current: grill.currentTemp,
+			                target : grill.targetTemp
+			            ])
+			
+			            sendAlert(message)
+			
+			        }
+			        else {
+			
+			            Long heldMilliseconds =
+			                now() - grill.targetReachedTime
+			
+			            Long requiredMilliseconds =
+			                holdMinutes * 60 * 1000
+			
+			            if(heldMilliseconds >= requiredMilliseconds) {
+			
+			                grill.targetAlertSent = true
+			
+			                def message = buildMessage(msgGrillTarget, [
+			                    sensor : grill.sensor,
+			                    current: grill.currentTemp,
+			                    target : grill.targetTemp
+			                ])
+			
+			                sendAlert(message)
+			
+			                logInfo(
+			                    "${grill.sensor} remained at or above target " +
+			                    "for ${holdMinutes} minute(s). Target alert sent."
+			                )
+			
+			            }
+			            else {
+			
+			                Long remainingMilliseconds =
+			                    requiredMilliseconds - heldMilliseconds
+			
+			                Long remainingMinutes =
+			                    Math.ceil(
+			                        remainingMilliseconds / 60000.0
+			                    ).toLong()
+			
+			                logDebug(
+			                    "${grill.sensor} target hold in progress. " +
+			                    "Remaining approximately ${remainingMinutes} minute(s)."
+			                )
+			
+			            }
+			
+			        }
+			
+			    }
+			
+			}
+			else {
+			
+			    /*
+			     * Grill dropped below target.
+			     *
+			     * Reset the hold timer so the grill must remain
+			     * at/above target for the full hold period again.
+			     */
+			    if(grill.targetReached) {
+			
+			        logInfo(
+			            "${grill.sensor} dropped below target temperature. " +
+			            "Resetting target hold timer."
+			        )
+			
+			    }
+			
+			    grill.targetReached = false
+			    grill.targetReachedTime = null
+			
+			}
 
             if(grill.targetReached &&
                grill.currentTemp <= grill.lowAlert &&
@@ -1652,8 +1795,9 @@ def processFoodTemperatures() {
 
 
         if(food.flipTemp &&
-           food.currentTemp >= food.flipTemp &&
-           !food.flipAlertSent) {
+		   food.currentTemp >= food.flipTemp &&
+		   !food.flipAlertSent &&
+		   now() >= (state.flipAlertEnabledAt ?: 0)) {
 
 
             food.flipAlertSent = true
